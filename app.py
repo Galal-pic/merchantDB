@@ -3,6 +3,8 @@ import json
 import sqlite3
 import os
 import pandas as pd
+import io
+import base64
 from datetime import datetime
 
 # Set page configuration
@@ -168,6 +170,87 @@ def get_response_details(response_id):
         "answers": answers
     }
 
+def get_all_survey_data():
+    """Get all survey data for export in a structured format"""
+    # Get all survey responses
+    responses = execute_query(
+        "SELECT id, category, timestamp FROM survey_responses",
+        fetch=True
+    )
+    
+    if not responses:
+        return None
+    
+    # Prepare data structure
+    all_data = []
+    
+    for response in responses:
+        response_id, category, timestamp = response
+        
+        # Get answers for this response
+        answers_result = execute_query(
+            "SELECT question, answer FROM survey_answers WHERE response_id = ?",
+            (response_id,),
+            fetch=True
+        )
+        
+        answers = {row[0]: row[1] for row in answers_result} if answers_result else {}
+        
+        # Add to data structure
+        all_data.append({
+            "id": response_id,
+            "category": category,
+            "timestamp": timestamp,
+            "answers": answers
+        })
+    
+    return all_data
+
+# Download helpers
+def create_download_link(df, filename, text):
+    """Create a download link for a dataframe"""
+    csv = df.to_csv(index=False)
+    b64 = base64.b64encode(csv.encode()).decode()
+    href = f'<a href="data:file/csv;base64,{b64}" download="{filename}">📥 {text}</a>'
+    return href
+
+def create_excel_download_link(df, filename, text):
+    """Create a download link for an Excel file"""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Data')
+    excel_data = output.getvalue()
+    b64 = base64.b64encode(excel_data).decode()
+    href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 {text}</a>'
+    return href
+
+def create_json_download_link(data, filename, text):
+    """Create a download link for JSON data"""
+    json_str = json.dumps(data, ensure_ascii=False, indent=2)
+    b64 = base64.b64encode(json_str.encode('utf-8')).decode()
+    href = f'<a href="data:file/json;base64,{b64}" download="{filename}">📥 {text}</a>'
+    return href
+
+def prepare_survey_dataframe(data):
+    """Prepare a flattened dataframe from survey data"""
+    # Start with basic info
+    rows = []
+    
+    for item in data:
+        row = {
+            "ID": item["id"],
+            "الفئة": item["category"],
+            "التاريخ والوقت": item["timestamp"]
+        }
+        
+        # Add all answers
+        for question, answer in item["answers"].items():
+            row[question] = answer
+        
+        rows.append(row)
+    
+    return pd.DataFrame(rows)
+
 # Function to load the JSON data
 @st.cache_data
 def load_data():
@@ -186,7 +269,10 @@ data = load_data()
 
 # Sidebar navigation
 st.sidebar.title("القائمة")
-page = st.sidebar.radio("اختر الصفحة", ["الاستبيان", "عرض النتائج السابقة"])
+page = st.sidebar.radio("اختر الصفحة", ["الاستبيان", "عرض النتائج السابقة", "تحميل البيانات"])
+
+# Extract categories
+categories = [category["category"] for category in data["business_categories"]]
 
 # Add information to sidebar
 with st.sidebar:
@@ -204,9 +290,6 @@ with st.sidebar:
                 st.success("تم الاتصال بقاعدة البيانات بنجاح!")
             else:
                 st.error("فشل الاتصال بقاعدة البيانات!")
-
-# Extract categories
-categories = [category["category"] for category in data["business_categories"]]
 
 # Main app - Survey Page
 if page == "الاستبيان":
@@ -267,6 +350,35 @@ if page == "الاستبيان":
                     st.subheader("الإجابات المقدمة:")
                     for question, answer in answers.items():
                         st.write(f"**{question}:** {answer}")
+                    
+                    # Create download links for this survey
+                    st.subheader("تحميل هذا الاستبيان:")
+                    
+                    # Prepare data
+                    response_data = {
+                        "id": response_id,
+                        "category": selected_category,
+                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "answers": answers
+                    }
+                    
+                    # Create JSON download
+                    json_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.json"
+                    json_link = create_json_download_link(response_data, json_filename, "تحميل كملف JSON")
+                    st.markdown(json_link, unsafe_allow_html=True)
+                    
+                    # Create Excel download
+                    df = pd.DataFrame(
+                        [[response_id, selected_category, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]], 
+                        columns=["ID", "الفئة", "التاريخ والوقت"]
+                    )
+                    # Add answers as columns
+                    for question, answer in answers.items():
+                        df[question] = answer
+                    
+                    excel_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.xlsx"
+                    excel_link = create_excel_download_link(df, excel_filename, "تحميل كملف Excel")
+                    st.markdown(excel_link, unsafe_allow_html=True)
                 else:
                     st.error("حدث خطأ أثناء حفظ الإجابات. يرجى المحاولة مرة أخرى.")
     else:
@@ -300,8 +412,34 @@ elif page == "عرض النتائج السابقة":
         if st.button("عرض التفاصيل"):
             response_details = get_response_details(response_id)
             if response_details:
-                st.write(f"**الفئة:** {response_details['category']}")
-                st.write(f"**التاريخ والوقت:** {response_details['timestamp']}")
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.write(f"**الفئة:** {response_details['category']}")
+                    st.write(f"**التاريخ والوقت:** {response_details['timestamp']}")
+                
+                with col2:
+                    # Download options for this response
+                    st.write("**تحميل هذا الاستبيان:**")
+                    
+                    # JSON download
+                    json_filename = f"survey_{response_id}_{response_details['category'].replace(' ', '_')}.json"
+                    json_link = create_json_download_link(response_details, json_filename, "تحميل كملف JSON")
+                    st.markdown(json_link, unsafe_allow_html=True)
+                    
+                    # Create dataframe for Excel
+                    df = pd.DataFrame(
+                        [[response_id, response_details['category'], response_details['timestamp']]], 
+                        columns=["ID", "الفئة", "التاريخ والوقت"]
+                    )
+                    # Add answers as columns
+                    for question, answer in response_details['answers'].items():
+                        df[question] = answer
+                    
+                    # Excel download
+                    excel_filename = f"survey_{response_id}_{response_details['category'].replace(' ', '_')}.xlsx"
+                    excel_link = create_excel_download_link(df, excel_filename, "تحميل كملف Excel")
+                    st.markdown(excel_link, unsafe_allow_html=True)
                 
                 st.subheader("الإجابات:")
                 for question, answer in response_details["answers"].items():
@@ -309,41 +447,84 @@ elif page == "عرض النتائج السابقة":
             else:
                 st.error(f"لم يتم العثور على استبيان برقم {response_id}")
 
-# Add database export functionality
-st.sidebar.markdown("---")
-if st.sidebar.checkbox("تصدير البيانات"):
-    export_format = st.sidebar.radio("اختر صيغة التصدير:", ["CSV", "Excel"])
+# Download Page
+elif page == "تحميل البيانات":
+    st.title("تحميل بيانات الاستبيانات")
     
-    if st.sidebar.button("تصدير"):
-        # Get all data
-        all_responses = execute_query(
-            "SELECT * FROM survey_responses", 
-            fetch=True
-        )
-        all_answers = execute_query(
-            "SELECT * FROM survey_answers", 
-            fetch=True
+    # Get all data
+    all_data = get_all_survey_data()
+    
+    if not all_data:
+        st.info("لا توجد بيانات للتحميل.")
+    else:
+        st.write(f"إجمالي عدد الاستبيانات: {len(all_data)}")
+        
+        st.subheader("تحميل جميع البيانات")
+        
+        # Format selection
+        format_option = st.radio(
+            "اختر صيغة التحميل:",
+            ["Excel (ملف واحد)", "CSV (ملف واحد)", "JSON (ملف واحد)"]
         )
         
-        if all_responses and all_answers:
-            # Convert to pandas dataframes
-            df_responses = pd.DataFrame(all_responses, columns=['id', 'category', 'timestamp'])
-            df_answers = pd.DataFrame(all_answers, columns=['id', 'response_id', 'question', 'answer'])
+        # Create timestamp for filenames
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        if format_option == "Excel (ملف واحد)":
+            # Create a flattened dataframe
+            df = prepare_survey_dataframe(all_data)
             
-            # Create export filename with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            # Create the download link
+            excel_filename = f"all_surveys_{timestamp}.xlsx"
+            excel_link = create_excel_download_link(df, excel_filename, "تحميل جميع البيانات كملف Excel")
+            st.markdown(excel_link, unsafe_allow_html=True)
             
-            if export_format == "CSV":
-                # Export as CSV
-                df_responses.to_csv(f"survey_responses_{timestamp}.csv", index=False, encoding='utf-8-sig')
-                df_answers.to_csv(f"survey_answers_{timestamp}.csv", index=False, encoding='utf-8-sig')
-                st.sidebar.success(f"تم تصدير الملفات بنجاح!\nsurvey_responses_{timestamp}.csv\nsurvey_answers_{timestamp}.csv")
-            else:
-                # Export as Excel
-                try:
-                    with pd.ExcelWriter(f"survey_data_{timestamp}.xlsx") as writer:
-                        df_responses.to_excel(writer, sheet_name='Responses', index=False)
-                        df_answers.to_excel(writer, sheet_name='Answers', index=False)
-                    st.sidebar.success(f"تم تصدير الملف بنجاح!\nsurvey_data_{timestamp}.xlsx")
-                except Exception as e:
-                    st.sidebar.error(f"خطأ في التصدير إلى Excel: {str(e)}")
+        elif format_option == "CSV (ملف واحد)":
+            # Create a flattened dataframe
+            df = prepare_survey_dataframe(all_data)
+            
+            # Create the download link
+            csv_filename = f"all_surveys_{timestamp}.csv"
+            csv_link = create_download_link(df, csv_filename, "تحميل جميع البيانات كملف CSV")
+            st.markdown(csv_link, unsafe_allow_html=True)
+            
+        else:  # JSON
+            # Create the download link
+            json_filename = f"all_surveys_{timestamp}.json"
+            json_link = create_json_download_link(all_data, json_filename, "تحميل جميع البيانات كملف JSON")
+            st.markdown(json_link, unsafe_allow_html=True)
+        
+        # Filter options
+        st.subheader("تصفية البيانات حسب الفئة")
+        
+        # Get unique categories
+        unique_categories = list(set(item["category"] for item in all_data))
+        
+        selected_category = st.selectbox(
+            "اختر الفئة للتحميل",
+            unique_categories
+        )
+        
+        # Filter data by category
+        filtered_data = [item for item in all_data if item["category"] == selected_category]
+        
+        if filtered_data:
+            st.write(f"عدد الاستبيانات في الفئة '{selected_category}': {len(filtered_data)}")
+            
+            # Create download links for filtered data
+            df_filtered = prepare_survey_dataframe(filtered_data)
+            
+            # Excel download
+            excel_filename = f"{selected_category.replace(' ', '_')}_{timestamp}.xlsx"
+            excel_link = create_excel_download_link(df_filtered, excel_filename, f"تحميل بيانات '{selected_category}' كملف Excel")
+            st.markdown(excel_link, unsafe_allow_html=True)
+            
+            # CSV download
+            csv_filename = f"{selected_category.replace(' ', '_')}_{timestamp}.csv"
+            csv_link = create_download_link(df_filtered, csv_filename, f"تحميل بيانات '{selected_category}' كملف CSV")
+            st.markdown(csv_link, unsafe_allow_html=True)
+            
+            # JSON download
+            json_filename = f"{selected_category.replace(' ', '_')}_{timestamp}.json"
+            json_link = create_json_download_link(filtered_data, json_filename, f"تحميل بيانات '{selected_category}' كملف JSON")
+            st.markdown(json_link, unsafe_allow_html=True)
