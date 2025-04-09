@@ -61,11 +61,12 @@ def execute_query(query, params=None, fetch=False):
 
 def init_database():
     """Create database tables if they don't exist"""
-    # Create survey_responses table
+    # Create survey_responses table with merchant_name field
     execute_query('''
     CREATE TABLE IF NOT EXISTS survey_responses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
+        merchant_name TEXT NOT NULL,
         timestamp TEXT NOT NULL
     )
     ''')
@@ -89,8 +90,8 @@ def test_connection():
     try:
         # Test insert
         execute_query(
-            "INSERT INTO survey_responses (category, timestamp) VALUES (?, ?)",
-            ("Test Category", "2023-01-01 00:00:00")
+            "INSERT INTO survey_responses (category, merchant_name, timestamp) VALUES (?, ?, ?)",
+            ("Test Category", "Test Merchant", "2023-01-01 00:00:00")
         )
         
         # Test select
@@ -111,14 +112,14 @@ def test_connection():
     except:
         return False
 
-def save_survey(category, answers):
+def save_survey(category, merchant_name, answers):
     """Save a survey response to the database"""
     # First insert the survey response
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     response_id = execute_query(
-        "INSERT INTO survey_responses (category, timestamp) VALUES (?, ?)",
-        (category, timestamp)
+        "INSERT INTO survey_responses (category, merchant_name, timestamp) VALUES (?, ?, ?)",
+        (category, merchant_name, timestamp)
     )
     
     if response_id:
@@ -134,19 +135,19 @@ def save_survey(category, answers):
 def get_recent_responses(limit=10):
     """Get recent survey responses"""
     result = execute_query(
-        f"SELECT id, category, timestamp FROM survey_responses ORDER BY id DESC LIMIT {limit}",
+        f"SELECT id, category, merchant_name, timestamp FROM survey_responses ORDER BY id DESC LIMIT {limit}",
         fetch=True
     )
     
     if result:
-        return [{"id": row[0], "category": row[1], "timestamp": row[2]} for row in result]
+        return [{"id": row[0], "category": row[1], "merchant_name": row[2], "timestamp": row[3]} for row in result]
     return []
 
 def get_response_details(response_id):
     """Get details for a specific response"""
     # Get response info
     response_info = execute_query(
-        "SELECT category, timestamp FROM survey_responses WHERE id = ?",
+        "SELECT category, merchant_name, timestamp FROM survey_responses WHERE id = ?",
         (response_id,),
         fetch=True
     )
@@ -166,7 +167,8 @@ def get_response_details(response_id):
     return {
         "id": response_id,
         "category": response_info[0][0],
-        "timestamp": response_info[0][1],
+        "merchant_name": response_info[0][1],
+        "timestamp": response_info[0][2],
         "answers": answers
     }
 
@@ -174,7 +176,7 @@ def get_all_survey_data():
     """Get all survey data for export in a structured format"""
     # Get all survey responses
     responses = execute_query(
-        "SELECT id, category, timestamp FROM survey_responses",
+        "SELECT id, category, merchant_name, timestamp FROM survey_responses",
         fetch=True
     )
     
@@ -185,7 +187,7 @@ def get_all_survey_data():
     all_data = []
     
     for response in responses:
-        response_id, category, timestamp = response
+        response_id, category, merchant_name, timestamp = response
         
         # Get answers for this response
         answers_result = execute_query(
@@ -200,6 +202,7 @@ def get_all_survey_data():
         all_data.append({
             "id": response_id,
             "category": category,
+            "merchant_name": merchant_name,
             "timestamp": timestamp,
             "answers": answers
         })
@@ -240,6 +243,7 @@ def prepare_survey_dataframe(data):
         row = {
             "ID": item["id"],
             "الفئة": item["category"],
+            "اسم التاجر": item["merchant_name"],
             "التاريخ والوقت": item["timestamp"]
         }
         
@@ -294,10 +298,13 @@ with st.sidebar:
 # Main app - Survey Page
 if page == "الاستبيان":
     st.title("استبيان الأعمال التجارية")
-    st.markdown("### اختر فئة العمل وأجب على الأسئلة")
+    st.markdown("### اختر فئة العمل وأدخل اسم التاجر وأجب على الأسئلة")
 
     # Add a select box for categories
     selected_category = st.selectbox("اختر الفئة", categories, index=0)
+    
+    # Add field for merchant name
+    merchant_name = st.text_input("أدخل اسم التاجر", "")
 
     # Find the selected category data
     selected_category_data = next(
@@ -340,47 +347,53 @@ if page == "الاستبيان":
             submit_button = st.form_submit_button("حفظ الإجابات")
             
             if submit_button:
-                # Save to database
-                response_id = save_survey(selected_category, answers)
-                
-                if response_id:
-                    st.success(f"تم حفظ الإجابات بنجاح في قاعدة البيانات برقم: {response_id}")
-                    
-                    # Display the answers
-                    st.subheader("الإجابات المقدمة:")
-                    for question, answer in answers.items():
-                        st.write(f"**{question}:** {answer}")
-                    
-                    # Create download links for this survey
-                    st.subheader("تحميل هذا الاستبيان:")
-                    
-                    # Prepare data
-                    response_data = {
-                        "id": response_id,
-                        "category": selected_category,
-                        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "answers": answers
-                    }
-                    
-                    # Create JSON download
-                    json_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.json"
-                    json_link = create_json_download_link(response_data, json_filename, "تحميل كملف JSON")
-                    st.markdown(json_link, unsafe_allow_html=True)
-                    
-                    # Create Excel download
-                    df = pd.DataFrame(
-                        [[response_id, selected_category, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]], 
-                        columns=["ID", "الفئة", "التاريخ والوقت"]
-                    )
-                    # Add answers as columns
-                    for question, answer in answers.items():
-                        df[question] = answer
-                    
-                    excel_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.xlsx"
-                    excel_link = create_excel_download_link(df, excel_filename, "تحميل كملف Excel")
-                    st.markdown(excel_link, unsafe_allow_html=True)
+                # Validate merchant name
+                if not merchant_name:
+                    st.error("يرجى إدخال اسم التاجر")
                 else:
-                    st.error("حدث خطأ أثناء حفظ الإجابات. يرجى المحاولة مرة أخرى.")
+                    # Save to database
+                    response_id = save_survey(selected_category, merchant_name, answers)
+                    
+                    if response_id:
+                        st.success(f"تم حفظ الإجابات بنجاح في قاعدة البيانات برقم: {response_id}")
+                        
+                        # Display the answers
+                        st.subheader("الإجابات المقدمة:")
+                        st.write(f"**اسم التاجر:** {merchant_name}")
+                        for question, answer in answers.items():
+                            st.write(f"**{question}:** {answer}")
+                        
+                        # Create download links for this survey
+                        st.subheader("تحميل هذا الاستبيان:")
+                        
+                        # Prepare data
+                        response_data = {
+                            "id": response_id,
+                            "category": selected_category,
+                            "merchant_name": merchant_name,
+                            "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "answers": answers
+                        }
+                        
+                        # Create JSON download
+                        json_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.json"
+                        json_link = create_json_download_link(response_data, json_filename, "تحميل كملف JSON")
+                        st.markdown(json_link, unsafe_allow_html=True)
+                        
+                        # Create Excel download
+                        df = pd.DataFrame(
+                            [[response_id, selected_category, merchant_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]], 
+                            columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت"]
+                        )
+                        # Add answers as columns
+                        for question, answer in answers.items():
+                            df[question] = answer
+                        
+                        excel_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.xlsx"
+                        excel_link = create_excel_download_link(df, excel_filename, "تحميل كملف Excel")
+                        st.markdown(excel_link, unsafe_allow_html=True)
+                    else:
+                        st.error("حدث خطأ أثناء حفظ الإجابات. يرجى المحاولة مرة أخرى.")
     else:
         st.error("لم يتم العثور على الفئة المحددة.")
 
@@ -401,6 +414,7 @@ elif page == "عرض النتائج السابقة":
         response_data = {
             "ID": [r["id"] for r in recent_responses],
             "الفئة": [r["category"] for r in recent_responses],
+            "اسم التاجر": [r["merchant_name"] for r in recent_responses],
             "التاريخ والوقت": [r["timestamp"] for r in recent_responses]
         }
         st.dataframe(response_data, width=800)
@@ -416,6 +430,7 @@ elif page == "عرض النتائج السابقة":
                 
                 with col1:
                     st.write(f"**الفئة:** {response_details['category']}")
+                    st.write(f"**اسم التاجر:** {response_details['merchant_name']}")
                     st.write(f"**التاريخ والوقت:** {response_details['timestamp']}")
                 
                 with col2:
@@ -429,8 +444,8 @@ elif page == "عرض النتائج السابقة":
                     
                     # Create dataframe for Excel
                     df = pd.DataFrame(
-                        [[response_id, response_details['category'], response_details['timestamp']]], 
-                        columns=["ID", "الفئة", "التاريخ والوقت"]
+                        [[response_id, response_details['category'], response_details['merchant_name'], response_details['timestamp']]], 
+                        columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت"]
                     )
                     # Add answers as columns
                     for question, answer in response_details['answers'].items():
@@ -527,4 +542,39 @@ elif page == "تحميل البيانات":
             # JSON download
             json_filename = f"{selected_category.replace(' ', '_')}_{timestamp}.json"
             json_link = create_json_download_link(filtered_data, json_filename, f"تحميل بيانات '{selected_category}' كملف JSON")
+            st.markdown(json_link, unsafe_allow_html=True)
+            
+        # Filter options by merchant name
+        st.subheader("تصفية البيانات حسب اسم التاجر")
+        
+        # Get unique merchant names
+        unique_merchants = list(set(item["merchant_name"] for item in all_data))
+        
+        selected_merchant = st.selectbox(
+            "اختر اسم التاجر للتحميل",
+            unique_merchants
+        )
+        
+        # Filter data by merchant name
+        filtered_by_merchant = [item for item in all_data if item["merchant_name"] == selected_merchant]
+        
+        if filtered_by_merchant:
+            st.write(f"عدد الاستبيانات للتاجر '{selected_merchant}': {len(filtered_by_merchant)}")
+            
+            # Create download links for filtered data
+            df_filtered_merchant = prepare_survey_dataframe(filtered_by_merchant)
+            
+            # Excel download
+            excel_filename = f"merchant_{selected_merchant.replace(' ', '_')}_{timestamp}.xlsx"
+            excel_link = create_excel_download_link(df_filtered_merchant, excel_filename, f"تحميل بيانات التاجر '{selected_merchant}' كملف Excel")
+            st.markdown(excel_link, unsafe_allow_html=True)
+            
+            # CSV download
+            csv_filename = f"merchant_{selected_merchant.replace(' ', '_')}_{timestamp}.csv"
+            csv_link = create_download_link(df_filtered_merchant, csv_filename, f"تحميل بيانات التاجر '{selected_merchant}' كملف CSV")
+            st.markdown(csv_link, unsafe_allow_html=True)
+            
+            # JSON download
+            json_filename = f"merchant_{selected_merchant.replace(' ', '_')}_{timestamp}.json"
+            json_link = create_json_download_link(filtered_by_merchant, json_filename, f"تحميل بيانات التاجر '{selected_merchant}' كملف JSON")
             st.markdown(json_link, unsafe_allow_html=True)
