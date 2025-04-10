@@ -6,8 +6,6 @@ import pandas as pd
 import io
 import base64
 from datetime import datetime
-from geopy.geocoders import Nominatim
-from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 # Set page configuration
 st.set_page_config(
@@ -63,7 +61,7 @@ def execute_query(query, params=None, fetch=False):
 
 def init_database():
     """Create database tables if they don't exist"""
-    # Create survey_responses table with merchant_name field
+    # Create survey_responses table with merchant_name field and location fields
     execute_query('''
     CREATE TABLE IF NOT EXISTS survey_responses (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -71,8 +69,7 @@ def init_database():
         merchant_name TEXT NOT NULL,
         timestamp TEXT NOT NULL,
         latitude TEXT,
-        longitude TEXT,
-        location_address TEXT
+        longitude TEXT
     )
     ''')
     
@@ -95,8 +92,8 @@ def test_connection():
     try:
         # Test insert
         execute_query(
-            "INSERT INTO survey_responses (category, merchant_name, timestamp) VALUES (?, ?, ?)",
-            ("Test Category", "Test Merchant", "2023-01-01 00:00:00")
+            "INSERT INTO survey_responses (category, merchant_name, timestamp, latitude, longitude) VALUES (?, ?, ?, ?, ?)",
+            ("Test Category", "Test Merchant", "2023-01-01 00:00:00", "0.0", "0.0")
         )
         
         # Test select
@@ -117,14 +114,14 @@ def test_connection():
     except:
         return False
 
-def save_survey(category, merchant_name, answers, latitude=None, longitude=None, location_address=None):
-    """Save a survey response to the database with optional location data"""
+def save_survey(category, merchant_name, answers, latitude=None, longitude=None):
+    """Save a survey response to the database"""
     # First insert the survey response
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     response_id = execute_query(
-        "INSERT INTO survey_responses (category, merchant_name, timestamp, latitude, longitude, location_address) VALUES (?, ?, ?, ?, ?, ?)",
-        (category, merchant_name, timestamp, latitude, longitude, location_address)
+        "INSERT INTO survey_responses (category, merchant_name, timestamp, latitude, longitude) VALUES (?, ?, ?, ?, ?)",
+        (category, merchant_name, timestamp, latitude, longitude)
     )
     
     if response_id:
@@ -140,19 +137,19 @@ def save_survey(category, merchant_name, answers, latitude=None, longitude=None,
 def get_recent_responses(limit=10):
     """Get recent survey responses"""
     result = execute_query(
-        f"SELECT id, category, merchant_name, timestamp FROM survey_responses ORDER BY id DESC LIMIT {limit}",
+        f"SELECT id, category, merchant_name, timestamp, latitude, longitude FROM survey_responses ORDER BY id DESC LIMIT {limit}",
         fetch=True
     )
     
     if result:
-        return [{"id": row[0], "category": row[1], "merchant_name": row[2], "timestamp": row[3]} for row in result]
+        return [{"id": row[0], "category": row[1], "merchant_name": row[2], "timestamp": row[3], "latitude": row[4], "longitude": row[5]} for row in result]
     return []
 
 def get_response_details(response_id):
     """Get details for a specific response"""
     # Get response info
     response_info = execute_query(
-        "SELECT category, merchant_name, timestamp, latitude, longitude, location_address FROM survey_responses WHERE id = ?",
+        "SELECT category, merchant_name, timestamp, latitude, longitude FROM survey_responses WHERE id = ?",
         (response_id,),
         fetch=True
     )
@@ -176,7 +173,6 @@ def get_response_details(response_id):
         "timestamp": response_info[0][2],
         "latitude": response_info[0][3],
         "longitude": response_info[0][4],
-        "location_address": response_info[0][5],
         "answers": answers
     }
 
@@ -184,7 +180,7 @@ def get_all_survey_data():
     """Get all survey data for export in a structured format"""
     # Get all survey responses
     responses = execute_query(
-        "SELECT id, category, merchant_name, timestamp, latitude, longitude, location_address FROM survey_responses",
+        "SELECT id, category, merchant_name, timestamp, latitude, longitude FROM survey_responses",
         fetch=True
     )
     
@@ -195,7 +191,7 @@ def get_all_survey_data():
     all_data = []
     
     for response in responses:
-        response_id, category, merchant_name, timestamp, latitude, longitude, location_address = response
+        response_id, category, merchant_name, timestamp, latitude, longitude = response
         
         # Get answers for this response
         answers_result = execute_query(
@@ -214,7 +210,6 @@ def get_all_survey_data():
             "timestamp": timestamp,
             "latitude": latitude,
             "longitude": longitude,
-            "location_address": location_address,
             "answers": answers
         })
     
@@ -256,9 +251,8 @@ def prepare_survey_dataframe(data):
             "الفئة": item["category"],
             "اسم التاجر": item["merchant_name"],
             "التاريخ والوقت": item["timestamp"],
-            "خط العرض": item.get("latitude", ""),
-            "خط الطول": item.get("longitude", ""),
-            "العنوان": item.get("location_address", "")
+            "خط العرض": item["latitude"],
+            "خط الطول": item["longitude"]
         }
         
         # Add all answers
@@ -279,21 +273,92 @@ def load_data():
         st.error("Error: data.json file not found in the current directory.")
         return {"business_categories": []}
 
-# Initialize session state for geolocation
-if 'location_clicked' not in st.session_state:
-    st.session_state.location_clicked = False
-if 'latitude' not in st.session_state:
-    st.session_state.latitude = None
-if 'longitude' not in st.session_state:
-    st.session_state.longitude = None
-if 'location_address' not in st.session_state:
-    st.session_state.location_address = None
-
 # Initialize the database
 init_database()
 
 # Load the data
 data = load_data()
+
+# Create a component for geolocation
+def geolocation_component():
+    # Create a container for the location component
+    container = st.container()
+    
+    # Initialize session state for location data if not exists
+    if 'latitude' not in st.session_state:
+        st.session_state.latitude = None
+    if 'longitude' not in st.session_state:
+        st.session_state.longitude = None
+    
+    # Callback for the button click
+    def get_location():
+        # This will be populated by JavaScript
+        pass
+    
+    # Create a styled button
+    with container:
+        st.button("📍 تحديد الموقع الحالي", on_click=get_location, type="primary")
+        
+        # Show current location if available
+        if st.session_state.latitude and st.session_state.longitude:
+            st.info(f"**الموقع الحالي:** خط العرض: {st.session_state.latitude}, خط الطول: {st.session_state.longitude}")
+            
+            # Show a small map
+            st.map(pd.DataFrame({
+                'lat': [float(st.session_state.latitude)], 
+                'lon': [float(st.session_state.longitude)]
+            }), zoom=13)
+    
+    # Add JavaScript to handle geolocation
+    st.markdown("""
+    <script>
+    // Geolocation handler
+    document.addEventListener('DOMContentLoaded', function() {
+        // Find the button
+        const buttons = document.querySelectorAll('button');
+        const locationButton = Array.from(buttons).find(button => 
+            button.textContent.includes('تحديد الموقع الحالي')
+        );
+        
+        if (locationButton) {
+            locationButton.addEventListener('click', function() {
+                if (navigator.geolocation) {
+                    navigator.geolocation.getCurrentPosition(function(position) {
+                        const lat = position.coords.latitude;
+                        const lng = position.coords.longitude;
+                        
+                        // Send the location data to Streamlit
+                        const data = {
+                            latitude: lat,
+                            longitude: lng
+                        };
+                        
+                        // Set to session state via Streamlit's message passing
+                        window.parent.postMessage({
+                            type: "streamlit:setComponentValue",
+                            value: data
+                        }, "*");
+                    }, function(error) {
+                        console.error("Error getting location:", error);
+                        alert("حدث خطأ أثناء محاولة تحديد الموقع: " + error.message);
+                    }, {
+                        enableHighAccuracy: true,
+                        timeout: 5000,
+                        maximumAge: 0
+                    });
+                } else {
+                    alert("المتصفح لا يدعم تحديد الموقع!");
+                }
+            });
+        }
+    });
+    </script>
+    """, unsafe_allow_html=True)
+    
+    return container
+
+# Call the geolocation component
+geolocation_component()
 
 # Sidebar navigation
 st.sidebar.title("القائمة")
@@ -330,71 +395,10 @@ if page == "الاستبيان":
     # Add field for merchant name
     merchant_name = st.text_input("أدخل اسم التاجر", "")
     
-    # Add geolocation feature
-    st.markdown("### 📍 تحديد الموقع")
+    # Create placeholders for latitude and longitude
+    latitude_placeholder = st.empty()
+    longitude_placeholder = st.empty()
     
-    # Check for URL parameters
-    query_params = st.query_params
-    
-    if "lat" in query_params and "lon" in query_params:
-        lat_val = query_params["lat"]
-        lon_val = query_params["lon"]
-        if isinstance(lat_val, list):
-            lat_val = lat_val[0]
-        if isinstance(lon_val, list):
-            lon_val = lon_val[0]
-        try:
-            lat_float = float(lat_val)
-            lon_float = float(lon_val)
-            st.session_state.latitude = lat_float
-            st.session_state.longitude = lon_float
-            
-            # Reverse geocode to get address
-            geolocator = Nominatim(user_agent="arabic_survey_app")
-            try:
-                location = geolocator.reverse((lat_float, lon_float), language="ar")
-                if location and location.address:
-                    st.session_state.location_address = location.address
-                    st.success("✅ تم تحديد موقعك بنجاح!")
-                    st.write(f"**العنوان:** {location.address}")
-                    st.write(f"**خط العرض:** {lat_float}")
-                    st.write(f"**خط الطول:** {lon_float}")
-                else:
-                    st.warning("تم تحديد الإحداثيات ولكن لم يتم العثور على عنوان.")
-                    st.write(f"**خط العرض:** {lat_float}")
-                    st.write(f"**خط الطول:** {lon_float}")
-            except (GeocoderTimedOut, GeocoderServiceError):
-                st.warning("تم تحديد الإحداثيات ولكن حدث خطأ في خدمة تحديد العنوان.")
-                st.write(f"**خط العرض:** {lat_float}")
-                st.write(f"**خط الطول:** {lon_float}")
-                
-        except ValueError:
-            st.error("حدث خطأ في قراءة الإحداثيات.")
-    elif "error" in query_params:
-        st.error("لم نستطع تحديد موقعك. تأكد من منح صلاحية الوصول للموقع.")
-    else:
-        if st.button("📍 اضغط هنا علشان نجيب موقعك", help="اضغط هنا للسماح بالوصول لموقعك"):
-            st.session_state.location_clicked = True
-            st.components.v1.html(
-                """
-                <script>
-                navigator.geolocation.getCurrentPosition(
-                    (position) => {
-                        const lat = position.coords.latitude;
-                        const lon = position.coords.longitude;
-                        // إعادة توجيه المستخدم مع تمرير الإحداثيات في عنوان URL
-                        window.location.href = window.location.pathname + "?lat=" + lat + "&lon=" + lon;
-                    },
-                    (error) => {
-                        window.location.href = window.location.pathname + "?error=refused";
-                    }
-                );
-                </script>
-                """,
-                height=200,
-            )
-            st.write("تم الضغط على الزر، يتم الآن الحصول على الموقع...")
-
     # Find the selected category data
     selected_category_data = next(
         (category for category in data["business_categories"] if category["category"] == selected_category),
@@ -432,6 +436,40 @@ if page == "الاستبيان":
                 # Add a separator
                 st.divider()
             
+            # Get latitude and longitude from session state if available
+            latitude = st.session_state.get('latitude', None)
+            longitude = st.session_state.get('longitude', None)
+            
+            # Hidden fields for location data
+            latitude_input = st.text_input("Latitude", key="lat_input", value=latitude, label_visibility="collapsed")
+            longitude_input = st.text_input("Longitude", key="lng_input", value=longitude, label_visibility="collapsed")
+            
+            # JavaScript callback to set session state
+            st.markdown('''
+            <script>
+            // Get the values from hidden inputs when form loads
+            document.addEventListener('DOMContentLoaded', function() {
+                const lat = document.getElementById('latitude').value;
+                const lng = document.getElementById('longitude').value;
+                
+                if (lat && lng) {
+                    const latInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Latitude"]');
+                    const lngInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Longitude"]');
+                    
+                    if (latInput && lngInput) {
+                        latInput.value = lat;
+                        lngInput.value = lng;
+                        
+                        // Trigger change event
+                        const event = new Event('change', { bubbles: true });
+                        latInput.dispatchEvent(event);
+                        lngInput.dispatchEvent(event);
+                    }
+                }
+            });
+            </script>
+            ''', unsafe_allow_html=True)
+            
             # Submit button
             submit_button = st.form_submit_button("حفظ الإجابات")
             
@@ -440,15 +478,12 @@ if page == "الاستبيان":
                 if not merchant_name:
                     st.error("يرجى إدخال اسم التاجر")
                 else:
-                    # Save to database with location if available
-                    response_id = save_survey(
-                        selected_category, 
-                        merchant_name, 
-                        answers,
-                        st.session_state.latitude,
-                        st.session_state.longitude,
-                        st.session_state.location_address
-                    )
+                    # Get location data from session state
+                    latitude = st.session_state.latitude if 'latitude' in st.session_state else None
+                    longitude = st.session_state.longitude if 'longitude' in st.session_state else None
+                    
+                    # Save to database
+                    response_id = save_survey(selected_category, merchant_name, answers, latitude, longitude)
                     
                     if response_id:
                         st.success(f"تم حفظ الإجابات بنجاح في قاعدة البيانات برقم: {response_id}")
@@ -458,12 +493,11 @@ if page == "الاستبيان":
                         st.write(f"**اسم التاجر:** {merchant_name}")
                         
                         # Display location if available
-                        if st.session_state.latitude and st.session_state.longitude:
-                            st.write("**معلومات الموقع:**")
-                            st.write(f"**خط العرض:** {st.session_state.latitude}")
-                            st.write(f"**خط الطول:** {st.session_state.longitude}")
-                            if st.session_state.location_address:
-                                st.write(f"**العنوان:** {st.session_state.location_address}")
+                        if latitude and longitude:
+                            st.write(f"**الموقع:** خط العرض: {latitude}, خط الطول: {longitude}")
+                            
+                            # Display map if coordinates are available
+                            st.map(pd.DataFrame({'lat': [float(latitude)], 'lon': [float(longitude)]}))
                         
                         for question, answer in answers.items():
                             st.write(f"**{question}:** {answer}")
@@ -477,9 +511,8 @@ if page == "الاستبيان":
                             "category": selected_category,
                             "merchant_name": merchant_name,
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "latitude": st.session_state.latitude,
-                            "longitude": st.session_state.longitude,
-                            "location_address": st.session_state.location_address,
+                            "latitude": latitude,
+                            "longitude": longitude,
                             "answers": answers
                         }
                         
@@ -490,16 +523,8 @@ if page == "الاستبيان":
                         
                         # Create Excel download
                         df = pd.DataFrame(
-                            [[
-                                response_id, 
-                                selected_category, 
-                                merchant_name, 
-                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                                st.session_state.latitude,
-                                st.session_state.longitude,
-                                st.session_state.location_address
-                            ]], 
-                            columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت", "خط العرض", "خط الطول", "العنوان"]
+                            [[response_id, selected_category, merchant_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), latitude, longitude]], 
+                            columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت", "خط العرض", "خط الطول"]
                         )
                         # Add answers as columns
                         for question, answer in answers.items():
@@ -508,11 +533,6 @@ if page == "الاستبيان":
                         excel_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.xlsx"
                         excel_link = create_excel_download_link(df, excel_filename, "تحميل كملف Excel")
                         st.markdown(excel_link, unsafe_allow_html=True)
-                        
-                        # Reset location session state after successful submission
-                        st.session_state.latitude = None
-                        st.session_state.longitude = None
-                        st.session_state.location_address = None
                     else:
                         st.error("حدث خطأ أثناء حفظ الإجابات. يرجى المحاولة مرة أخرى.")
     else:
@@ -536,7 +556,9 @@ elif page == "عرض النتائج السابقة":
             "ID": [r["id"] for r in recent_responses],
             "الفئة": [r["category"] for r in recent_responses],
             "اسم التاجر": [r["merchant_name"] for r in recent_responses],
-            "التاريخ والوقت": [r["timestamp"] for r in recent_responses]
+            "التاريخ والوقت": [r["timestamp"] for r in recent_responses],
+            "خط العرض": [r["latitude"] for r in recent_responses],
+            "خط الطول": [r["longitude"] for r in recent_responses]
         }
         st.dataframe(response_data, width=800)
         
@@ -555,12 +577,14 @@ elif page == "عرض النتائج السابقة":
                     st.write(f"**التاريخ والوقت:** {response_details['timestamp']}")
                     
                     # Display location if available
-                    if response_details.get('latitude') and response_details.get('longitude'):
-                        st.write("**معلومات الموقع:**")
-                        st.write(f"**خط العرض:** {response_details['latitude']}")
-                        st.write(f"**خط الطول:** {response_details['longitude']}")
-                        if response_details.get('location_address'):
-                            st.write(f"**العنوان:** {response_details['location_address']}")
+                    if response_details['latitude'] and response_details['longitude']:
+                        st.write(f"**الموقع:** خط العرض: {response_details['latitude']}, خط الطول: {response_details['longitude']}")
+                        
+                        # Display map
+                        st.map(pd.DataFrame({
+                            'lat': [float(response_details['latitude'])], 
+                            'lon': [float(response_details['longitude'])]
+                        }))
                 
                 with col2:
                     # Download options for this response
@@ -578,11 +602,10 @@ elif page == "عرض النتائج السابقة":
                             response_details['category'], 
                             response_details['merchant_name'], 
                             response_details['timestamp'],
-                            response_details.get('latitude', ''),
-                            response_details.get('longitude', ''),
-                            response_details.get('location_address', '')
+                            response_details['latitude'],
+                            response_details['longitude']
                         ]], 
-                        columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت", "خط العرض", "خط الطول", "العنوان"]
+                        columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت", "خط العرض", "خط الطول"]
                     )
                     # Add answers as columns
                     for question, answer in response_details['answers'].items():
@@ -715,3 +738,86 @@ elif page == "تحميل البيانات":
             json_filename = f"merchant_{selected_merchant.replace(' ', '_')}_{timestamp}.json"
             json_link = create_json_download_link(filtered_by_merchant, json_filename, f"تحميل بيانات التاجر '{selected_merchant}' كملف JSON")
             st.markdown(json_link, unsafe_allow_html=True)
+
+# Add JavaScript component to handle geolocation
+components_js = """
+<script>
+// Check for geolocation data in URL params on page load
+document.addEventListener('DOMContentLoaded', function() {
+    // Try to read from hidden input fields
+    const urlParams = new URLSearchParams(window.location.search);
+    const lat = urlParams.get('lat');
+    const lng = urlParams.get('lng');
+    
+    if (lat && lng) {
+        // Set values in hidden fields
+        document.getElementById('latitude').value = lat;
+        document.getElementById('longitude').value = lng;
+        
+        // Update display
+        const latDisplay = document.getElementById('lat-display');
+        const lngDisplay = document.getElementById('lng-display');
+        
+        if (latDisplay && lngDisplay) {
+            latDisplay.textContent = lat;
+            lngDisplay.textContent = lng;
+            document.getElementById('location-container').style.display = 'block';
+        }
+    }
+});
+
+// Function to update Streamlit form inputs when location is captured
+function updateLocationInputs(lat, lng) {
+    // Find the Streamlit text inputs for latitude and longitude
+    const latInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Latitude"]');
+    const lngInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Longitude"]');
+    
+    if (latInput && lngInput) {
+        // Set the values
+        latInput.value = lat;
+        lngInput.value = lng;
+        
+        // Trigger change events to update Streamlit's state
+        const event = new Event('input', { bubbles: true });
+        latInput.dispatchEvent(event);
+        lngInput.dispatchEvent(event);
+    }
+}
+
+// Listen for clicks on the location button
+document.addEventListener('click', function(e) {
+    if (e.target && e.target.matches('button') && e.target.textContent.includes('تحديد الموقع الحالي')) {
+        e.preventDefault();
+        
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(function(position) {
+                const lat = position.coords.latitude;
+                const lng = position.coords.longitude;
+                
+                // Update hidden fields
+                document.getElementById('latitude').value = lat;
+                document.getElementById('longitude').value = lng;
+                
+                // Update display
+                document.getElementById('lat-display').textContent = lat;
+                document.getElementById('lng-display').textContent = lng;
+                document.getElementById('location-container').style.display = 'block';
+                
+                // Update Streamlit inputs
+                updateLocationInputs(lat, lng);
+                
+                // Rerun Streamlit app to update state
+                window.parent.postMessage({
+                    type: "streamlit:setComponentValue",
+                    value: { latitude: lat, longitude: lng }
+                }, "*");
+            });
+        } else {
+            alert("المتصفح لا يدعم تحديد الموقع!");
+        }
+    }
+});
+</script>
+"""
+
+st.components.v1.html(components_js, height=0)
