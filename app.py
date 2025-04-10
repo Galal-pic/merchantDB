@@ -6,6 +6,7 @@ import pandas as pd
 import io
 import base64
 from datetime import datetime
+import streamlit.components.v1 as components
 
 # Set page configuration
 st.set_page_config(
@@ -273,92 +274,167 @@ def load_data():
         st.error("Error: data.json file not found in the current directory.")
         return {"business_categories": []}
 
+# Function to get geolocation
+def get_location():
+    """Get user's geolocation using HTML component"""
+    # Create container for location info
+    location_container = st.empty()
+    
+    # Create HTML component with geolocation functionality
+    geolocation_html = """
+    <div style="margin-bottom: 10px;">
+        <button 
+            id="get-location-btn" 
+            style="background-color: #0366d6; color: white; padding: 10px 16px; 
+                   border: none; border-radius: 4px; cursor: pointer; font-weight: bold;"
+            onclick="getLocation()">
+            📍 تحديد الموقع الحالي
+        </button>
+        <div id="location-status" style="margin-top: 8px; font-size: 14px;"></div>
+    </div>
+    
+    <script>
+    function getLocation() {
+        // Update status
+        document.getElementById('location-status').innerHTML = 
+            '<div style="padding: 8px; background-color: #e3f2fd; border-radius: 4px; text-align: right;">جاري تحديد الموقع...</div>';
+        
+        if (navigator.geolocation) {
+            navigator.geolocation.getCurrentPosition(
+                function(position) {
+                    // Success - get coordinates
+                    const lat = position.coords.latitude;
+                    const lng = position.coords.longitude;
+                    
+                    // Save to local storage
+                    localStorage.setItem('survey_latitude', lat);
+                    localStorage.setItem('survey_longitude', lng);
+                    
+                    // Update status display
+                    document.getElementById('location-status').innerHTML = 
+                        '<div style="padding: 8px; background-color: #e8f5e9; border-radius: 4px; text-align: right;">' +
+                        'تم تحديد الموقع بنجاح! خط العرض: ' + lat + ', خط الطول: ' + lng + '</div>';
+                    
+                    // Submit coordinates to Streamlit via URL parameters and reload
+                    const url = new URL(window.location.href);
+                    url.searchParams.set('lat', lat);
+                    url.searchParams.set('lng', lng);
+                    window.location.href = url.toString();
+                },
+                function(error) {
+                    // Handle errors
+                    let errorMessage = 'حدث خطأ أثناء محاولة تحديد الموقع.';
+                    switch(error.code) {
+                        case error.PERMISSION_DENIED:
+                            errorMessage = 'تم رفض إذن الوصول إلى الموقع.';
+                            break;
+                        case error.POSITION_UNAVAILABLE:
+                            errorMessage = 'معلومات الموقع غير متاحة.';
+                            break;
+                        case error.TIMEOUT:
+                            errorMessage = 'انتهت مهلة طلب الموقع.';
+                            break;
+                    }
+                    document.getElementById('location-status').innerHTML = 
+                        '<div style="padding: 8px; background-color: #ffebee; border-radius: 4px; text-align: right;">' +
+                        errorMessage + '</div>';
+                }
+            );
+        } else {
+            document.getElementById('location-status').innerHTML = 
+                '<div style="padding: 8px; background-color: #ffebee; border-radius: 4px; text-align: right;">' +
+                'المتصفح لا يدعم خدمة تحديد الموقع.</div>';
+        }
+    }
+    
+    // Check if we have coordinates in localStorage when page loads
+    document.addEventListener('DOMContentLoaded', function() {
+        const urlParams = new URLSearchParams(window.location.search);
+        if (urlParams.has('lat') && urlParams.has('lng')) {
+            // We have coordinates from URL
+            const lat = urlParams.get('lat');
+            const lng = urlParams.get('lng');
+            document.getElementById('location-status').innerHTML = 
+                '<div style="padding: 8px; background-color: #e8f5e9; border-radius: 4px; text-align: right;">' +
+                'تم تحديد الموقع بنجاح! خط العرض: ' + lat + ', خط الطول: ' + lng + '</div>';
+        } else {
+            // Check localStorage
+            const lat = localStorage.getItem('survey_latitude');
+            const lng = localStorage.getItem('survey_longitude');
+            if (lat && lng) {
+                document.getElementById('location-status').innerHTML = 
+                    '<div style="padding: 8px; background-color: #e8f5e9; border-radius: 4px; text-align: right;">' +
+                    'تم تحديد الموقع سابقًا! خط العرض: ' + lat + ', خط الطول: ' + lng + '</div>';
+            }
+        }
+    });
+    </script>
+    """
+    
+    # Render HTML component
+    components.html(geolocation_html, height=100)
+    
+    # Check URL parameters for coordinates
+    query_params = st.experimental_get_query_params()
+    latitude = None
+    longitude = None
+    
+    if 'lat' in query_params and 'lng' in query_params:
+        latitude = query_params['lat'][0]
+        longitude = query_params['lng'][0]
+        
+        # Store in session state
+        st.session_state.latitude = latitude
+        st.session_state.longitude = longitude
+        
+        # Clear URL parameters
+        cleaned_params = {k: v for k, v in query_params.items() if k not in ['lat', 'lng']}
+        st.experimental_set_query_params(**cleaned_params)
+        
+        # Show map with location
+        with location_container:
+            st.success(f"تم تحديد الموقع: خط العرض: {latitude}, خط الطول: {longitude}")
+            
+            # Show map
+            try:
+                st.map(pd.DataFrame({
+                    'lat': [float(latitude)], 
+                    'lon': [float(longitude)]
+                }))
+            except:
+                st.error("تعذر عرض الخريطة. تأكد من صحة الإحداثيات.")
+    
+    # Alternative manual input
+    if st.checkbox("إدخال الإحداثيات يدويًا", key="manual_geo_input"):
+        col1, col2 = st.columns(2)
+        with col1:
+            manual_lat = st.text_input("خط العرض (Latitude)", key="manual_lat_input")
+        with col2:
+            manual_lng = st.text_input("خط الطول (Longitude)", key="manual_lng_input")
+            
+        if st.button("استخدام الإحداثيات المدخلة", key="use_manual_coords"):
+            if manual_lat and manual_lng:
+                try:
+                    # Validate coordinates
+                    lat_float = float(manual_lat)
+                    lng_float = float(manual_lng)
+                    
+                    if -90 <= lat_float <= 90 and -180 <= lng_float <= 180:
+                        st.session_state.latitude = manual_lat
+                        st.session_state.longitude = manual_lng
+                        st.experimental_rerun()
+                    else:
+                        st.error("قيم غير صالحة للإحداثيات. يجب أن يكون خط العرض بين -90 و 90، وخط الطول بين -180 و 180.")
+                except ValueError:
+                    st.error("يرجى إدخال أرقام صالحة للإحداثيات.")
+    
+    return latitude, longitude
+
 # Initialize the database
 init_database()
 
 # Load the data
 data = load_data()
-
-# Create a component for geolocation
-def geolocation_component():
-    # Create a container for the location component
-    container = st.container()
-    
-    # Initialize session state for location data if not exists
-    if 'latitude' not in st.session_state:
-        st.session_state.latitude = None
-    if 'longitude' not in st.session_state:
-        st.session_state.longitude = None
-    
-    # Callback for the button click
-    def get_location():
-        # This will be populated by JavaScript
-        pass
-    
-    # Create a styled button
-    with container:
-        st.button("📍 تحديد الموقع الحالي", on_click=get_location, type="primary")
-        
-        # Show current location if available
-        if st.session_state.latitude and st.session_state.longitude:
-            st.info(f"**الموقع الحالي:** خط العرض: {st.session_state.latitude}, خط الطول: {st.session_state.longitude}")
-            
-            # Show a small map
-            st.map(pd.DataFrame({
-                'lat': [float(st.session_state.latitude)], 
-                'lon': [float(st.session_state.longitude)]
-            }), zoom=13)
-    
-    # Add JavaScript to handle geolocation
-    st.markdown("""
-    <script>
-    // Geolocation handler
-    document.addEventListener('DOMContentLoaded', function() {
-        // Find the button
-        const buttons = document.querySelectorAll('button');
-        const locationButton = Array.from(buttons).find(button => 
-            button.textContent.includes('تحديد الموقع الحالي')
-        );
-        
-        if (locationButton) {
-            locationButton.addEventListener('click', function() {
-                if (navigator.geolocation) {
-                    navigator.geolocation.getCurrentPosition(function(position) {
-                        const lat = position.coords.latitude;
-                        const lng = position.coords.longitude;
-                        
-                        // Send the location data to Streamlit
-                        const data = {
-                            latitude: lat,
-                            longitude: lng
-                        };
-                        
-                        // Set to session state via Streamlit's message passing
-                        window.parent.postMessage({
-                            type: "streamlit:setComponentValue",
-                            value: data
-                        }, "*");
-                    }, function(error) {
-                        console.error("Error getting location:", error);
-                        alert("حدث خطأ أثناء محاولة تحديد الموقع: " + error.message);
-                    }, {
-                        enableHighAccuracy: true,
-                        timeout: 5000,
-                        maximumAge: 0
-                    });
-                } else {
-                    alert("المتصفح لا يدعم تحديد الموقع!");
-                }
-            });
-        }
-    });
-    </script>
-    """, unsafe_allow_html=True)
-    
-    return container
-
-# Call the geolocation component
-geolocation_component()
 
 # Sidebar navigation
 st.sidebar.title("القائمة")
@@ -395,9 +471,10 @@ if page == "الاستبيان":
     # Add field for merchant name
     merchant_name = st.text_input("أدخل اسم التاجر", "")
     
-    # Create placeholders for latitude and longitude
-    latitude_placeholder = st.empty()
-    longitude_placeholder = st.empty()
+    # Get location
+    st.subheader("تحديد الموقع")
+    st.markdown("يمكنك تحديد الموقع الحالي لحفظه مع الاستبيان.")
+    latitude, longitude = get_location()
     
     # Find the selected category data
     selected_category_data = next(
@@ -436,40 +513,6 @@ if page == "الاستبيان":
                 # Add a separator
                 st.divider()
             
-            # Get latitude and longitude from session state if available
-            latitude = st.session_state.get('latitude', None)
-            longitude = st.session_state.get('longitude', None)
-            
-            # Hidden fields for location data
-            latitude_input = st.text_input("Latitude", key="lat_input", value=latitude, label_visibility="collapsed")
-            longitude_input = st.text_input("Longitude", key="lng_input", value=longitude, label_visibility="collapsed")
-            
-            # JavaScript callback to set session state
-            st.markdown('''
-            <script>
-            // Get the values from hidden inputs when form loads
-            document.addEventListener('DOMContentLoaded', function() {
-                const lat = document.getElementById('latitude').value;
-                const lng = document.getElementById('longitude').value;
-                
-                if (lat && lng) {
-                    const latInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Latitude"]');
-                    const lngInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Longitude"]');
-                    
-                    if (latInput && lngInput) {
-                        latInput.value = lat;
-                        lngInput.value = lng;
-                        
-                        // Trigger change event
-                        const event = new Event('change', { bubbles: true });
-                        latInput.dispatchEvent(event);
-                        lngInput.dispatchEvent(event);
-                    }
-                }
-            });
-            </script>
-            ''', unsafe_allow_html=True)
-            
             # Submit button
             submit_button = st.form_submit_button("حفظ الإجابات")
             
@@ -478,12 +521,12 @@ if page == "الاستبيان":
                 if not merchant_name:
                     st.error("يرجى إدخال اسم التاجر")
                 else:
-                    # Get location data from session state
-                    latitude = st.session_state.latitude if 'latitude' in st.session_state else None
-                    longitude = st.session_state.longitude if 'longitude' in st.session_state else None
+                    # Get latest location data from session state
+                    lat = st.session_state.get('latitude', latitude)
+                    lng = st.session_state.get('longitude', longitude)
                     
                     # Save to database
-                    response_id = save_survey(selected_category, merchant_name, answers, latitude, longitude)
+                    response_id = save_survey(selected_category, merchant_name, answers, lat, lng)
                     
                     if response_id:
                         st.success(f"تم حفظ الإجابات بنجاح في قاعدة البيانات برقم: {response_id}")
@@ -493,11 +536,11 @@ if page == "الاستبيان":
                         st.write(f"**اسم التاجر:** {merchant_name}")
                         
                         # Display location if available
-                        if latitude and longitude:
-                            st.write(f"**الموقع:** خط العرض: {latitude}, خط الطول: {longitude}")
+                        if lat and lng:
+                            st.write(f"**الموقع:** خط العرض: {lat}, خط الطول: {lng}")
                             
                             # Display map if coordinates are available
-                            st.map(pd.DataFrame({'lat': [float(latitude)], 'lon': [float(longitude)]}))
+                            st.map(pd.DataFrame({'lat': [float(lat)], 'lon': [float(lng)]}))
                         
                         for question, answer in answers.items():
                             st.write(f"**{question}:** {answer}")
@@ -511,8 +554,8 @@ if page == "الاستبيان":
                             "category": selected_category,
                             "merchant_name": merchant_name,
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                            "latitude": latitude,
-                            "longitude": longitude,
+                            "latitude": lat,
+                            "longitude": lng,
                             "answers": answers
                         }
                         
@@ -523,7 +566,7 @@ if page == "الاستبيان":
                         
                         # Create Excel download
                         df = pd.DataFrame(
-                            [[response_id, selected_category, merchant_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), latitude, longitude]], 
+                            [[response_id, selected_category, merchant_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), lat, lng]], 
                             columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت", "خط العرض", "خط الطول"]
                         )
                         # Add answers as columns
@@ -738,86 +781,3 @@ elif page == "تحميل البيانات":
             json_filename = f"merchant_{selected_merchant.replace(' ', '_')}_{timestamp}.json"
             json_link = create_json_download_link(filtered_by_merchant, json_filename, f"تحميل بيانات التاجر '{selected_merchant}' كملف JSON")
             st.markdown(json_link, unsafe_allow_html=True)
-
-# Add JavaScript component to handle geolocation
-components_js = """
-<script>
-// Check for geolocation data in URL params on page load
-document.addEventListener('DOMContentLoaded', function() {
-    // Try to read from hidden input fields
-    const urlParams = new URLSearchParams(window.location.search);
-    const lat = urlParams.get('lat');
-    const lng = urlParams.get('lng');
-    
-    if (lat && lng) {
-        // Set values in hidden fields
-        document.getElementById('latitude').value = lat;
-        document.getElementById('longitude').value = lng;
-        
-        // Update display
-        const latDisplay = document.getElementById('lat-display');
-        const lngDisplay = document.getElementById('lng-display');
-        
-        if (latDisplay && lngDisplay) {
-            latDisplay.textContent = lat;
-            lngDisplay.textContent = lng;
-            document.getElementById('location-container').style.display = 'block';
-        }
-    }
-});
-
-// Function to update Streamlit form inputs when location is captured
-function updateLocationInputs(lat, lng) {
-    // Find the Streamlit text inputs for latitude and longitude
-    const latInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Latitude"]');
-    const lngInput = document.querySelector('input[data-testid="stTextInput"][aria-label="Longitude"]');
-    
-    if (latInput && lngInput) {
-        // Set the values
-        latInput.value = lat;
-        lngInput.value = lng;
-        
-        // Trigger change events to update Streamlit's state
-        const event = new Event('input', { bubbles: true });
-        latInput.dispatchEvent(event);
-        lngInput.dispatchEvent(event);
-    }
-}
-
-// Listen for clicks on the location button
-document.addEventListener('click', function(e) {
-    if (e.target && e.target.matches('button') && e.target.textContent.includes('تحديد الموقع الحالي')) {
-        e.preventDefault();
-        
-        if (navigator.geolocation) {
-            navigator.geolocation.getCurrentPosition(function(position) {
-                const lat = position.coords.latitude;
-                const lng = position.coords.longitude;
-                
-                // Update hidden fields
-                document.getElementById('latitude').value = lat;
-                document.getElementById('longitude').value = lng;
-                
-                // Update display
-                document.getElementById('lat-display').textContent = lat;
-                document.getElementById('lng-display').textContent = lng;
-                document.getElementById('location-container').style.display = 'block';
-                
-                // Update Streamlit inputs
-                updateLocationInputs(lat, lng);
-                
-                // Rerun Streamlit app to update state
-                window.parent.postMessage({
-                    type: "streamlit:setComponentValue",
-                    value: { latitude: lat, longitude: lng }
-                }, "*");
-            });
-        } else {
-            alert("المتصفح لا يدعم تحديد الموقع!");
-        }
-    }
-});
-</script>
-"""
-
-st.components.v1.html(components_js, height=0)
