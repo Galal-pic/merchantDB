@@ -6,6 +6,8 @@ import pandas as pd
 import io
 import base64
 from datetime import datetime
+from geopy.geocoders import Nominatim
+from geopy.exc import GeocoderTimedOut, GeocoderServiceError
 
 # Set page configuration
 st.set_page_config(
@@ -67,7 +69,10 @@ def init_database():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         category TEXT NOT NULL,
         merchant_name TEXT NOT NULL,
-        timestamp TEXT NOT NULL
+        timestamp TEXT NOT NULL,
+        latitude TEXT,
+        longitude TEXT,
+        location_address TEXT
     )
     ''')
     
@@ -112,14 +117,14 @@ def test_connection():
     except:
         return False
 
-def save_survey(category, merchant_name, answers):
-    """Save a survey response to the database"""
+def save_survey(category, merchant_name, answers, latitude=None, longitude=None, location_address=None):
+    """Save a survey response to the database with optional location data"""
     # First insert the survey response
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
     response_id = execute_query(
-        "INSERT INTO survey_responses (category, merchant_name, timestamp) VALUES (?, ?, ?)",
-        (category, merchant_name, timestamp)
+        "INSERT INTO survey_responses (category, merchant_name, timestamp, latitude, longitude, location_address) VALUES (?, ?, ?, ?, ?, ?)",
+        (category, merchant_name, timestamp, latitude, longitude, location_address)
     )
     
     if response_id:
@@ -147,7 +152,7 @@ def get_response_details(response_id):
     """Get details for a specific response"""
     # Get response info
     response_info = execute_query(
-        "SELECT category, merchant_name, timestamp FROM survey_responses WHERE id = ?",
+        "SELECT category, merchant_name, timestamp, latitude, longitude, location_address FROM survey_responses WHERE id = ?",
         (response_id,),
         fetch=True
     )
@@ -169,6 +174,9 @@ def get_response_details(response_id):
         "category": response_info[0][0],
         "merchant_name": response_info[0][1],
         "timestamp": response_info[0][2],
+        "latitude": response_info[0][3],
+        "longitude": response_info[0][4],
+        "location_address": response_info[0][5],
         "answers": answers
     }
 
@@ -176,7 +184,7 @@ def get_all_survey_data():
     """Get all survey data for export in a structured format"""
     # Get all survey responses
     responses = execute_query(
-        "SELECT id, category, merchant_name, timestamp FROM survey_responses",
+        "SELECT id, category, merchant_name, timestamp, latitude, longitude, location_address FROM survey_responses",
         fetch=True
     )
     
@@ -187,7 +195,7 @@ def get_all_survey_data():
     all_data = []
     
     for response in responses:
-        response_id, category, merchant_name, timestamp = response
+        response_id, category, merchant_name, timestamp, latitude, longitude, location_address = response
         
         # Get answers for this response
         answers_result = execute_query(
@@ -204,6 +212,9 @@ def get_all_survey_data():
             "category": category,
             "merchant_name": merchant_name,
             "timestamp": timestamp,
+            "latitude": latitude,
+            "longitude": longitude,
+            "location_address": location_address,
             "answers": answers
         })
     
@@ -244,7 +255,10 @@ def prepare_survey_dataframe(data):
             "ID": item["id"],
             "الفئة": item["category"],
             "اسم التاجر": item["merchant_name"],
-            "التاريخ والوقت": item["timestamp"]
+            "التاريخ والوقت": item["timestamp"],
+            "خط العرض": item.get("latitude", ""),
+            "خط الطول": item.get("longitude", ""),
+            "العنوان": item.get("location_address", "")
         }
         
         # Add all answers
@@ -264,6 +278,16 @@ def load_data():
     except FileNotFoundError:
         st.error("Error: data.json file not found in the current directory.")
         return {"business_categories": []}
+
+# Initialize session state for geolocation
+if 'location_clicked' not in st.session_state:
+    st.session_state.location_clicked = False
+if 'latitude' not in st.session_state:
+    st.session_state.latitude = None
+if 'longitude' not in st.session_state:
+    st.session_state.longitude = None
+if 'location_address' not in st.session_state:
+    st.session_state.location_address = None
 
 # Initialize the database
 init_database()
@@ -305,6 +329,71 @@ if page == "الاستبيان":
     
     # Add field for merchant name
     merchant_name = st.text_input("أدخل اسم التاجر", "")
+    
+    # Add geolocation feature
+    st.markdown("### 📍 تحديد الموقع")
+    
+    # Check for URL parameters
+    query_params = st.query_params
+    
+    if "lat" in query_params and "lon" in query_params:
+        lat_val = query_params["lat"]
+        lon_val = query_params["lon"]
+        if isinstance(lat_val, list):
+            lat_val = lat_val[0]
+        if isinstance(lon_val, list):
+            lon_val = lon_val[0]
+        try:
+            lat_float = float(lat_val)
+            lon_float = float(lon_val)
+            st.session_state.latitude = lat_float
+            st.session_state.longitude = lon_float
+            
+            # Reverse geocode to get address
+            geolocator = Nominatim(user_agent="arabic_survey_app")
+            try:
+                location = geolocator.reverse((lat_float, lon_float), language="ar")
+                if location and location.address:
+                    st.session_state.location_address = location.address
+                    st.success("✅ تم تحديد موقعك بنجاح!")
+                    st.write(f"**العنوان:** {location.address}")
+                    st.write(f"**خط العرض:** {lat_float}")
+                    st.write(f"**خط الطول:** {lon_float}")
+                else:
+                    st.warning("تم تحديد الإحداثيات ولكن لم يتم العثور على عنوان.")
+                    st.write(f"**خط العرض:** {lat_float}")
+                    st.write(f"**خط الطول:** {lon_float}")
+            except (GeocoderTimedOut, GeocoderServiceError):
+                st.warning("تم تحديد الإحداثيات ولكن حدث خطأ في خدمة تحديد العنوان.")
+                st.write(f"**خط العرض:** {lat_float}")
+                st.write(f"**خط الطول:** {lon_float}")
+                
+        except ValueError:
+            st.error("حدث خطأ في قراءة الإحداثيات.")
+    elif "error" in query_params:
+        st.error("لم نستطع تحديد موقعك. تأكد من منح صلاحية الوصول للموقع.")
+    else:
+        if st.button("📍 اضغط هنا علشان نجيب موقعك", help="اضغط هنا للسماح بالوصول لموقعك"):
+            st.session_state.location_clicked = True
+            st.components.v1.html(
+                """
+                <script>
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        const lat = position.coords.latitude;
+                        const lon = position.coords.longitude;
+                        // إعادة توجيه المستخدم مع تمرير الإحداثيات في عنوان URL
+                        window.location.href = window.location.pathname + "?lat=" + lat + "&lon=" + lon;
+                    },
+                    (error) => {
+                        window.location.href = window.location.pathname + "?error=refused";
+                    }
+                );
+                </script>
+                """,
+                height=200,
+            )
+            st.write("تم الضغط على الزر، يتم الآن الحصول على الموقع...")
 
     # Find the selected category data
     selected_category_data = next(
@@ -351,8 +440,15 @@ if page == "الاستبيان":
                 if not merchant_name:
                     st.error("يرجى إدخال اسم التاجر")
                 else:
-                    # Save to database
-                    response_id = save_survey(selected_category, merchant_name, answers)
+                    # Save to database with location if available
+                    response_id = save_survey(
+                        selected_category, 
+                        merchant_name, 
+                        answers,
+                        st.session_state.latitude,
+                        st.session_state.longitude,
+                        st.session_state.location_address
+                    )
                     
                     if response_id:
                         st.success(f"تم حفظ الإجابات بنجاح في قاعدة البيانات برقم: {response_id}")
@@ -360,6 +456,15 @@ if page == "الاستبيان":
                         # Display the answers
                         st.subheader("الإجابات المقدمة:")
                         st.write(f"**اسم التاجر:** {merchant_name}")
+                        
+                        # Display location if available
+                        if st.session_state.latitude and st.session_state.longitude:
+                            st.write("**معلومات الموقع:**")
+                            st.write(f"**خط العرض:** {st.session_state.latitude}")
+                            st.write(f"**خط الطول:** {st.session_state.longitude}")
+                            if st.session_state.location_address:
+                                st.write(f"**العنوان:** {st.session_state.location_address}")
+                        
                         for question, answer in answers.items():
                             st.write(f"**{question}:** {answer}")
                         
@@ -372,6 +477,9 @@ if page == "الاستبيان":
                             "category": selected_category,
                             "merchant_name": merchant_name,
                             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                            "latitude": st.session_state.latitude,
+                            "longitude": st.session_state.longitude,
+                            "location_address": st.session_state.location_address,
                             "answers": answers
                         }
                         
@@ -382,8 +490,16 @@ if page == "الاستبيان":
                         
                         # Create Excel download
                         df = pd.DataFrame(
-                            [[response_id, selected_category, merchant_name, datetime.now().strftime("%Y-%m-%d %H:%M:%S")]], 
-                            columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت"]
+                            [[
+                                response_id, 
+                                selected_category, 
+                                merchant_name, 
+                                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                                st.session_state.latitude,
+                                st.session_state.longitude,
+                                st.session_state.location_address
+                            ]], 
+                            columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت", "خط العرض", "خط الطول", "العنوان"]
                         )
                         # Add answers as columns
                         for question, answer in answers.items():
@@ -392,6 +508,11 @@ if page == "الاستبيان":
                         excel_filename = f"survey_{response_id}_{selected_category.replace(' ', '_')}.xlsx"
                         excel_link = create_excel_download_link(df, excel_filename, "تحميل كملف Excel")
                         st.markdown(excel_link, unsafe_allow_html=True)
+                        
+                        # Reset location session state after successful submission
+                        st.session_state.latitude = None
+                        st.session_state.longitude = None
+                        st.session_state.location_address = None
                     else:
                         st.error("حدث خطأ أثناء حفظ الإجابات. يرجى المحاولة مرة أخرى.")
     else:
@@ -432,6 +553,14 @@ elif page == "عرض النتائج السابقة":
                     st.write(f"**الفئة:** {response_details['category']}")
                     st.write(f"**اسم التاجر:** {response_details['merchant_name']}")
                     st.write(f"**التاريخ والوقت:** {response_details['timestamp']}")
+                    
+                    # Display location if available
+                    if response_details.get('latitude') and response_details.get('longitude'):
+                        st.write("**معلومات الموقع:**")
+                        st.write(f"**خط العرض:** {response_details['latitude']}")
+                        st.write(f"**خط الطول:** {response_details['longitude']}")
+                        if response_details.get('location_address'):
+                            st.write(f"**العنوان:** {response_details['location_address']}")
                 
                 with col2:
                     # Download options for this response
@@ -444,8 +573,16 @@ elif page == "عرض النتائج السابقة":
                     
                     # Create dataframe for Excel
                     df = pd.DataFrame(
-                        [[response_id, response_details['category'], response_details['merchant_name'], response_details['timestamp']]], 
-                        columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت"]
+                        [[
+                            response_id, 
+                            response_details['category'], 
+                            response_details['merchant_name'], 
+                            response_details['timestamp'],
+                            response_details.get('latitude', ''),
+                            response_details.get('longitude', ''),
+                            response_details.get('location_address', '')
+                        ]], 
+                        columns=["ID", "الفئة", "اسم التاجر", "التاريخ والوقت", "خط العرض", "خط الطول", "العنوان"]
                     )
                     # Add answers as columns
                     for question, answer in response_details['answers'].items():
